@@ -33,10 +33,10 @@
     </nav>
 	
 	<div class="container page-content">
-		<div id="login" class="hidden">
+		<div id="spotifyLogin" class="hidden">
 			<div class="jumbotron">
 				<h1>Please login to Spotify to continue</h1>
-				<p><a class="btn btn-lg btn-primary" href="login" role="button">Login</a></p>
+				<p><a class="btn btn-lg btn-primary" href="spotifyLogin" role="button">Login</a></p>
 			</div>	
 		</div>
 		<div id="loading" class="hidden">
@@ -57,7 +57,7 @@
 	<script id="playlist-template" type="text/x-handlebars-template">
 		<td>{{name}}</td>
 		<td class="text-center">
-			<button aria-label="Copy to Deezer">
+			<button aria-label="Copy to Deezer" data-playlist-id="{{id}}">
 				<span class="glyphicon glyphicon-export">
 				</span>
 			</button>
@@ -68,7 +68,26 @@
 	<script src="//cdnjs.cloudflare.com/ajax/libs/handlebars.js/2.0.0/handlebars.min.js"></script>
     <script>
 		(function() {
+			
+			var params = getHashParams();
 
+			var spotifyAccessToken = tryGetParam('spotify_access_token', params),
+				spotifyRefreshToken = tryGetParam('spotify_refresh_token', params),
+				spotifyUserId = tryGetParam('spotify_user_id', params),
+				error = params.error;
+				
+			if (error) {
+				alert(error);
+				return;
+			}
+			
+			if (spotifyAccessToken === null || spotifyUserId === null) {
+				document.getElementById('spotifyLogin').classList.remove('hidden');
+				return;
+			}
+
+			loadPlaylists(spotifyUserId, spotifyAccessToken);
+			
 			/**
 			* Obtains parameters from the hash of the URL
 			* @return Object
@@ -85,59 +104,139 @@
 				return hashParams;
 			}
 			
-			function ajaxError(jqXHR, textStatus, errorThrown) {
+			function tryGetParam(paramName, queryStringParams) {
 				
-				alert('AJAX error');
+				var value = queryStringParams[paramName];
+				
+				if (typeof value === "undefined" || value === '') {
+					value = sessionStorage.getItem(paramName);
+				}
+				else {
+					sessionStorage.setItem(paramName, value);
+				}
+				
+				return value;
 			}
 			
-			var playlistTemplateSource = document.getElementById('playlist-template').innerHTML,
-				playlistTemplate = Handlebars.compile(playlistTemplateSource),
-				playlistsTable = document.getElementById('playlists');
-			
-			function displayPlaylists(userId, accessToken) {
+			function loadPlaylists(spotifyUserId, spotifyAccessToken) {
 				
-				var playlistsUrl = 'https://api.spotify.com/v1/users/' + userId + '/playlists'
+				document.getElementById('loading').classList.remove('hidden');
+			
+				var playlistsUrl = 'https://api.spotify.com/v1/users/' + encodeURIComponent(spotifyUserId) + '/playlists'
 				$.ajax({
 					type: 'GET',
 					url: playlistsUrl,
+					headers: {
+						'Authorization': 'Bearer ' + spotifyAccessToken
+					},
+					success: displayPlaylists,
+					error: ajaxError,
+				});
+			}
+			
+			function displayPlaylists(playlistsRepsonse) {
+			
+				var playlistTemplateSource = document.getElementById('playlist-template').innerHTML,
+					playlistTemplate = Handlebars.compile(playlistTemplateSource),
+					playlistsTable = document.getElementById('playlists');
+				
+				playlistsRepsonse.items.forEach(function(currentValue, index, array) {
+					
+					var playlistMarkup = playlistTemplate(currentValue);
+					var row = playlistsTable.insertRow();
+					row.innerHTML = playlistMarkup;
+				});
+
+				document.getElementById('loading').classList.add('hidden');
+				
+				playlistsTable.addEventListener('click', onPlaylistTableClick);
+				playlistsTable.classList.remove('hidden');
+			}
+			
+			function onPlaylistTableClick(event) {
+			
+				var buttonElement;
+				
+				if (event.target.hasAttribute('data-playlist-id')) {
+					buttonElement = event.target;
+				}
+				else if (typeof event.target.parent != "undefined" && event.target.parent.hasAttribute('data-playlist-id')) {
+					buttonElement = event.target.parent;
+				}
+				
+				if (typeof buttonElement != "undefined") {
+					var playlistId = event.target.getAttribute('data-playlist-id');
+					copyPlaylistToDeezer(playlistId);
+				}
+			}
+			
+			
+			
+			
+			
+			function ajaxError(jqXHR, textStatus, errorThrown) {
+				
+				var ajaxError = {
+					textStatus: textStatus,
+					errorThrown: errorThrown,
+				};
+				console.error(ajaxError);
+			}
+			
+			function copyPlaylistToDeezer(playlistId) {
+				var playlistTracksUrl = 'https://api.spotify.com/v1/users/' + encodeURIComponent(userId) + '/playlists/' + encodeURIComponent(playlistId) + '/tracks'
+				$.ajax({
+					type: 'GET',
+					url: playlistTracksUrl,
 					headers: {
 						'Authorization': 'Bearer ' + accessToken
 					},
 					success: function(response) {
 					
+						var deezerTracks = new Array(response.items.length);
+						
 						response.items.forEach(function(currentValue, index, array) {
-							
-							var playlistMarkup = playlistTemplate(currentValue);
-							var row = playlistsTable.insertRow();
-							row.innerHTML = playlistMarkup;
+							findTrackInDeezer(currentValue.track.name, currentValue.track.album.name, currentValue.track.artists[0].name);
 						});
-
-						document.getElementById('loading').classList.add('hidden');
-						document.getElementById('playlists').classList.remove('hidden');
+						
+						
 					},
 					error: ajaxError,
 				});
 			}
-
-			var params = getHashParams();
-
-			var accessToken = params.access_token,
-				userId = params.user_id,
-				error = params.error;
-
-			if (error) {
-				alert('There was an error during the authentication');
-				document.getElementById('login').classList.remove('hidden');
-				return;
-			}
 			
-			if (!accessToken || !userId) {
-				document.getElementById('login').classList.remove('hidden');
-				return;
+			function findTrackInDeezer(trackName, albumName, artistName) {
+			
+				var queryString = trackName + ' ' + artistName;
+				var deezerTrackSearchUrl = 'http://api.deezer.com/search/track?q=' + encodeURIComponent(queryString) + '&output=jsonp';
+				$.ajax({
+					type: 'GET',
+					url: deezerTrackSearchUrl,
+                    dataType: 'jsonp',
+					success: function(response) {
+					
+						var deezerTrackId;
+					
+						response.data.forEach(function(currentValue, index, array) {
+							if (currentValue.title === trackName &&
+								currentValue.album.title === albumName &&
+								currentValue.artist.name === artistName) {
+								
+								deezerTrackId = currentValue.id;
+								return true;
+							}
+							
+							return false;
+						});
+						
+						if (typeof deezerTrackId != "undefined") {
+							
+						}
+						
+					},
+					error: ajaxError,
+				});
 			}
-
-			document.getElementById('loading').classList.remove('hidden');
-			displayPlaylists(userId, accessToken);
       })();
     </script>
 </body>

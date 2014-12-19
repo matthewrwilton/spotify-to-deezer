@@ -41,7 +41,7 @@ var app = express();
 app.use(express.static(__dirname + '/public'))
 	.use(cookieParser());
 
-app.get('/login', function(req, res) {
+app.get('/spotifyLogin', function(req, res) {
 
 	var state = generateRandomString(16);
 	res.cookie(stateKey, state);
@@ -112,9 +112,9 @@ app.get('/callback', function(req, res) {
 			
 			res.redirect('/#' +
 				querystring.stringify({
-					access_token: access_token,
-					refresh_token: refresh_token,
-					user_id: response.body.id
+					spotify_access_token: access_token,
+					spotify_refresh_token: refresh_token,
+					spotify_user_id: response.body.id
 			}));
         });
 	});
