@@ -74,6 +74,8 @@
 			var spotifyAccessToken = tryGetParam('spotify_access_token', params),
 				spotifyRefreshToken = tryGetParam('spotify_refresh_token', params),
 				spotifyUserId = tryGetParam('spotify_user_id', params),
+				deezerAccessToken = tryGetParam('deezer_access_token', params),
+				deezerUserId = tryGetParam('deezer_user_id', params),
 				error = params.error;
 				
 			if (error) {
@@ -165,12 +167,16 @@
 				}
 				
 				if (typeof buttonElement != "undefined") {
+							
+					if (deezerAccessToken === null || deezerUserId === null) {
+						document.location.href = '/deezerLogin';
+						return;
+					}
+				
 					var playlistId = event.target.getAttribute('data-playlist-id');
 					copyPlaylistToDeezer(playlistId);
 				}
 			}
-			
-			
 			
 			
 			
