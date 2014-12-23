@@ -33,31 +33,33 @@
     </nav>
 	
 	<div class="container page-content">
-		<div id="spotifyLogin" class="hidden">
+		<div id="spotifyLoginView" class="hidden">
 			<div class="jumbotron">
 				<h1>Please login to Spotify to continue</h1>
 				<p><a class="btn btn-lg btn-primary" href="spotifyLogin" role="button">Login</a></p>
 			</div>	
 		</div>
-		<div id="loading" class="hidden">
+		<div id="loadingView" class="hidden">
 			<div class="jumbotron">
 				<h1>Loading playlists ...</h1>
 			</div>	
 		</div>
-		<table id="playlists" class="table table-striped hidden">
-			<tbody>
-				<tr>
-					<th>Name</th>
-					<th class="text-center">Copy to Deezer</th>
-				</tr>
-			</tbody>
-		</table>
+		<div id="mainView" class="hidden">
+			<table id="playlistsTable" class="table table-striped">
+				<tbody>
+					<tr>
+						<th>Name</th>
+						<th class="text-center">Copy to Deezer</th>
+					</tr>
+				</tbody>
+			</table>
+		</div>
 	</div>
 	
 	<script id="playlist-template" type="text/x-handlebars-template">
 		<td>{{name}}</td>
 		<td class="text-center">
-			<button aria-label="Copy to Deezer" data-playlist-id="{{id}}">
+			<button aria-label="Copy to Deezer" data-playlist-id="{{id}}" data-playlist-name="{{name}}">
 				<span class="glyphicon glyphicon-export">
 				</span>
 			</button>
@@ -84,11 +86,26 @@
 			}
 			
 			if (spotifyAccessToken === null || spotifyUserId === null) {
-				document.getElementById('spotifyLogin').classList.remove('hidden');
-				return;
+				loginToSpotify();
 			}
-
-			loadPlaylists(spotifyUserId, spotifyAccessToken);
+			else {
+				loadPlaylists(spotifyUserId, spotifyAccessToken);
+			}
+			
+			// From https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/endsWith
+			if (!String.prototype.endsWith) {
+				Object.defineProperty(String.prototype, 'endsWith', {
+					value: function(searchString, position) {
+						var subjectString = this.toString();
+						if (position === undefined || position > subjectString.length) {
+							position = subjectString.length;
+						}
+						position -= searchString.length;
+						var lastIndex = subjectString.indexOf(searchString, position);
+						return lastIndex !== -1 && lastIndex === position;
+					}
+				});
+			}
 			
 			/**
 			* Obtains parameters from the hash of the URL
@@ -120,27 +137,25 @@
 				return value;
 			}
 			
+			function loginToSpotify() {
+			
+				document.getElementById('spotifyLoginView').classList.remove('hidden');
+			}
+			
 			function loadPlaylists(spotifyUserId, spotifyAccessToken) {
 				
-				document.getElementById('loading').classList.remove('hidden');
+				document.getElementById('loadingView').classList.remove('hidden');
 			
 				var playlistsUrl = 'https://api.spotify.com/v1/users/' + encodeURIComponent(spotifyUserId) + '/playlists'
-				$.ajax({
-					type: 'GET',
-					url: playlistsUrl,
-					headers: {
-						'Authorization': 'Bearer ' + spotifyAccessToken
-					},
-					success: displayPlaylists,
-					error: ajaxError,
-				});
+				sendSpotifyAjaxRequest('GET', playlistsUrl, displayPlaylists);
 			}
 			
 			function displayPlaylists(playlistsRepsonse) {
 			
 				var playlistTemplateSource = document.getElementById('playlist-template').innerHTML,
 					playlistTemplate = Handlebars.compile(playlistTemplateSource),
-					playlistsTable = document.getElementById('playlists');
+					playlistsTable = document.getElementById('playlistsTable'),
+					mainView = document.getElementById('mainView');
 				
 				playlistsRepsonse.items.forEach(function(currentValue, index, array) {
 					
@@ -149,10 +164,10 @@
 					row.innerHTML = playlistMarkup;
 				});
 
-				document.getElementById('loading').classList.add('hidden');
+				document.getElementById('loadingView').classList.add('hidden');
 				
 				playlistsTable.addEventListener('click', onPlaylistTableClick);
-				playlistsTable.classList.remove('hidden');
+				mainView.classList.remove('hidden');
 			}
 			
 			function onPlaylistTableClick(event) {
@@ -162,23 +177,205 @@
 				if (event.target.hasAttribute('data-playlist-id')) {
 					buttonElement = event.target;
 				}
-				else if (typeof event.target.parent != "undefined" && event.target.parent.hasAttribute('data-playlist-id')) {
-					buttonElement = event.target.parent;
+				else if (typeof event.target.parentElement !== "undefined" && event.target.parentElement.hasAttribute('data-playlist-id')) {
+					buttonElement = event.target.parentElement;
 				}
 				
-				if (typeof buttonElement != "undefined") {
-							
-					if (deezerAccessToken === null || deezerUserId === null) {
-						document.location.href = '/deezerLogin';
-						return;
-					}
-				
-					var playlistId = event.target.getAttribute('data-playlist-id');
-					copyPlaylistToDeezer(playlistId);
+				if (typeof buttonElement !== "undefined") {
+					var playlistName = buttonElement.getAttribute('data-playlist-name');
+					var spotifyPlaylistId = buttonElement.getAttribute('data-playlist-id');
+					
+					copySpotifyPlaylistToDeezer(playlistName, spotifyPlaylistId);
 				}
 			}
 			
+			function copySpotifyPlaylistToDeezer(playlistName, spotifyPlaylistId) {
 			
+				if (deezerAccessToken === null || deezerUserId === null) {
+					// Deezer login required before creating playlist.
+					document.location.href = '/deezerLogin';
+					return;
+				}
+
+				getDeezerPlaylists()
+					.then(checkPlaylistDoesNotExistInDeezer(playlistName))
+					.done(function() {
+						var createPlaylistPromise = createDeezerPlaylist(playlistName),
+							findDeezerTracksPromise = getSpotifyPlaylistTracks(spotifyPlaylistId);
+						
+						$.when(createPlaylistPromise, findDeezerTracksPromise).done(addTracksToPlaylist);
+					});
+			}
+			
+			function getDeezerPlaylists() {
+				
+				var getPlaylistsAjax = $.ajax({
+					type: 'GET',
+					url: 'http://api.deezer.com/user/me/playlists?access_token=' + deezerAccessToken + '&output=jsonp',
+                    dataType: 'jsonp',
+					error: ajaxError,
+				});
+				
+				return getPlaylistsAjax.then(function getDeezerPlaylistsResponse(response) {
+					return response.data;
+				});
+			}
+			
+			function checkPlaylistDoesNotExistInDeezer(playlistName) {
+				
+				return function checkPlaylistDoesNotExistInDeezerDeferred(deezerPlaylists) {
+					
+					var deferred = new jQuery.Deferred();
+				
+					if (doesPlaylistExistInDeezer(playlistName, deezerPlaylists)) {
+						alert('This playlist already exists in Deezer.\nPlease delete or rename it first.');
+						deferred.reject();
+					}
+					else {
+						deferred.resolve();
+					}
+					
+					return deferred.promise();
+				};
+			}
+			
+			function doesPlaylistExistInDeezer(playlistName, deezerPlaylists) {
+			
+				var playlistExists = false;
+				
+				deezerPlaylists.forEach(function doesPlaylistMatch(currentValue, index, array) {
+					if (currentValue.title === playlistName) {
+						playlistExists = true;
+						return true;
+					}	
+				});
+				
+				return playlistExists;
+			}
+			
+			function createDeezerPlaylist(playlistName) {
+			
+				var postPlaylistAjax = $.ajax({
+					type: 'POST',
+					url: 'http://api.deezer.com/user/me/playlists?request_method=POST&access_token=' + encodeURIComponent(deezerAccessToken) + '&title=' + encodeURIComponent(playlistName) + '&output=jsonp',
+					dataType: 'jsonp',
+					error: ajaxError,
+				});
+			
+				return postPlaylistAjax.then(function (response) {
+					return response.id;
+				});
+			}
+			
+			function getSpotifyPlaylistTracks(spotifyPlaylistId) {
+				
+				var playlistTracksUrl = 'https://api.spotify.com/v1/users/' + encodeURIComponent(spotifyUserId) + '/playlists/' + encodeURIComponent(spotifyPlaylistId) + '/tracks',
+					getPlaylistTracksAjax = sendSpotifyAjaxRequest('GET', playlistTracksUrl, null);
+				
+				return getPlaylistTracksAjax.then(function (response) {
+					return response.items;
+				}).then(findPlaylistTracksInDeezer);
+			}
+			
+			function findPlaylistTracksInDeezer(playlistTracks) {
+			
+				var deferred = new jQuery.Deferred(),
+					findTrackPromises = new Array(playlistTracks.length),
+					deezerTrackIds = new Array(playlistTracks.length);
+					
+				playlistTracks.forEach(function(currentValue, index, array) {
+				
+					var findTrackPromise = findTrackInDeezer(currentValue.track.name, currentValue.track.album.name, currentValue.track.artists[0].name);
+					findTrackPromises[index] = findTrackPromise.then(function (deezerTrackId) {
+						deezerTrackIds[index] = deezerTrackId;
+					});
+				});
+				
+				$.when.apply($, findTrackPromises)
+					.done(function() { 
+						var result = [];
+						deezerTrackIds.forEach(function(currentValue, index, array) {
+							if (currentValue !== null) {
+								result.push(currentValue);
+							}
+						});
+					
+						deferred.resolve(result);
+					})
+					.fail(function() { 
+						deferred.reject(); 
+					});
+				
+				return deferred.promise();
+			}
+			
+			function findTrackInDeezer(trackName, albumName, artistName) {
+			
+				var queryString = trackName + ' ' + artistName;
+				var deezerTrackSearchAjax = $.ajax({
+					type: 'GET',
+					url: 'http://api.deezer.com/search/track?q=' + encodeURIComponent(queryString) + '&output=jsonp',
+                    dataType: 'jsonp',
+					error: ajaxError,
+				});
+				
+				return deezerTrackSearchAjax.then(function (response) {
+					var deezerTrackId;
+					
+					response.data.forEach(function(currentValue, index, array) {
+						
+						var resultTitle = currentValue.title,
+							albumVersionSuffix = ' (Album Version)';
+						if (!trackName.endsWith(albumVersionSuffix) && resultTitle.endsWith(albumVersionSuffix)) {
+							resultTitle = resultTitle.substring(0, resultTitle.length - albumVersionSuffix.length);
+						}
+						
+						if (resultTitle === trackName &&
+							currentValue.album.title === albumName &&
+							currentValue.artist.name === artistName) {
+							
+							deezerTrackId = currentValue.id;
+							return true;
+						}
+						
+						return false;
+					});
+					
+					if (typeof deezerTrackId == "undefined") {
+						deezerTrackId = null;
+						alert('Could not find the track "' + trackName + '" by ' + artistName);
+					}
+					
+					return deezerTrackId;
+				});
+			}
+			
+			function addTracksToPlaylist(deezerPlaylistId, deezerTrackIds) {
+				
+				var songs = deezerTrackIds.join(',');
+				var postPlaylistTracksAjax = $.ajax({
+					type: 'POST',
+					url: 'http://api.deezer.com/playlist/' + encodeURIComponent(deezerPlaylistId) + '/tracks?request_method=POST&access_token=' + encodeURIComponent(deezerAccessToken) + '&songs=' + encodeURIComponent(songs) + '&output=jsonp',
+					dataType: 'jsonp',
+					success: function() {
+						alert('Playlist copied');
+					},
+					error: ajaxError,
+				});
+			}
+			
+			function sendSpotifyAjaxRequest(type, url, onSuccess) {
+			
+				return $.ajax({
+					type: type,
+					url: url,
+					headers: {
+						'Authorization': 'Bearer ' + spotifyAccessToken
+					},
+					success: onSuccess,
+					error: ajaxError,
+				});
+			}
 			
 			function ajaxError(jqXHR, textStatus, errorThrown) {
 				
@@ -187,61 +384,6 @@
 					errorThrown: errorThrown,
 				};
 				console.error(ajaxError);
-			}
-			
-			function copyPlaylistToDeezer(playlistId) {
-				var playlistTracksUrl = 'https://api.spotify.com/v1/users/' + encodeURIComponent(userId) + '/playlists/' + encodeURIComponent(playlistId) + '/tracks'
-				$.ajax({
-					type: 'GET',
-					url: playlistTracksUrl,
-					headers: {
-						'Authorization': 'Bearer ' + accessToken
-					},
-					success: function(response) {
-					
-						var deezerTracks = new Array(response.items.length);
-						
-						response.items.forEach(function(currentValue, index, array) {
-							findTrackInDeezer(currentValue.track.name, currentValue.track.album.name, currentValue.track.artists[0].name);
-						});
-						
-						
-					},
-					error: ajaxError,
-				});
-			}
-			
-			function findTrackInDeezer(trackName, albumName, artistName) {
-			
-				var queryString = trackName + ' ' + artistName;
-				var deezerTrackSearchUrl = 'http://api.deezer.com/search/track?q=' + encodeURIComponent(queryString) + '&output=jsonp';
-				$.ajax({
-					type: 'GET',
-					url: deezerTrackSearchUrl,
-                    dataType: 'jsonp',
-					success: function(response) {
-					
-						var deezerTrackId;
-					
-						response.data.forEach(function(currentValue, index, array) {
-							if (currentValue.title === trackName &&
-								currentValue.album.title === albumName &&
-								currentValue.artist.name === artistName) {
-								
-								deezerTrackId = currentValue.id;
-								return true;
-							}
-							
-							return false;
-						});
-						
-						if (typeof deezerTrackId != "undefined") {
-							
-						}
-						
-					},
-					error: ajaxError,
-				});
 			}
       })();
     </script>
